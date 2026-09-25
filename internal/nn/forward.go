@@ -237,14 +237,22 @@ func (m *Model) Forward(c *Cache, batch []Sequence, trainFrom int) ([]float32, e
 		cur = out
 	}
 	hL := c.hs[L]
-
-	// Scorer over the [MASK] rows.
-	c.fN = grow(c.fN, R*H)
-	c.fMean, c.fRstd = grow(c.fMean, R), grow(c.fRstd, R)
 	rows := make([]float32, R*H)
 	for r, t := range c.rowTok {
 		copy(rows[r*H:(r+1)*H], hL[t*H:(t+1)*H])
 	}
+	return m.HeadForward(c, rows, R), nil
+}
+
+// HeadForward applies the final norm and the scorer head to R encoder rows
+// (the hidden states at the [MASK] positions, R x H) and returns one logit
+// per row. It records what HeadBackward needs in c.
+func (m *Model) HeadForward(c *Cache, rows []float32, R int) []float32 {
+	cfg := m.Cfg
+	H := cfg.Hidden
+	c.R = R
+	c.fN = grow(c.fN, R*H)
+	c.fMean, c.fRstd = grow(c.fMean, R), grow(c.fRstd, R)
 	layerNormFwd(c.fN, rows, R, H, m.FinalNorm, nil, cfg.Eps, c.fMean, c.fRstd)
 	h := &m.Head
 	half := H / 2
@@ -270,7 +278,7 @@ func (m *Model) Forward(c *Cache, batch []Sequence, trainFrom int) ([]float32, e
 		}
 		c.logits[r] = s + h.OutB[0]
 	}
-	return c.logits, nil
+	return c.logits
 }
 
 func (m *Model) layerFwd(c *Cache, l int, in, out []float32, lc *layerCache, keep bool, T, H, I, D int) {

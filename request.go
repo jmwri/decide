@@ -6,7 +6,7 @@ import (
 )
 
 // SDKVersion is the version of this SDK.
-const SDKVersion = "1.0.0"
+const SDKVersion = "1.1.0"
 
 // Request is the /v1/systemone request body.
 type Request struct {

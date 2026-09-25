@@ -27,9 +27,11 @@ type Metrics struct {
 
 // Report groups metrics.
 type Report struct {
-	Overall Metrics             `json:"overall"`
-	ByKind  map[string]*Metrics `json:"by_kind"`
-	ByTask  map[string]*Metrics `json:"by_task"`
+	Overall Metrics `json:"overall"`
+	// MacroAcc is the mean of per-task accuracies (every task counts equally).
+	MacroAcc float64             `json:"macro_acc"`
+	ByKind   map[string]*Metrics `json:"by_kind"`
+	ByTask   map[string]*Metrics `json:"by_task"`
 }
 
 // Softmax returns the temperature-scaled softmax of logits.
@@ -53,11 +55,16 @@ func Softmax(logits []float32, temp float64) []float64 {
 	return out
 }
 
-// Predict runs the model over items in token-budgeted batches and returns the
-// logits of every item.
+// Predict runs the model over items on the CPU in token-budgeted batches and
+// returns the logits of every item.
 func Predict(m *nn.Model, items []Item, tokenBudget int) ([][]float32, error) {
+	cache := nn.NewCache(m)
+	return PredictWith(func(b []nn.Sequence) ([]float32, error) { return m.Forward(cache, b, 1<<20) }, items, tokenBudget)
+}
+
+// PredictWith is Predict over any forward function (CPU or GPU).
+func PredictWith(fwd func([]nn.Sequence) ([]float32, error), items []Item, tokenBudget int) ([][]float32, error) {
 	out := make([][]float32, len(items))
-	c := nn.NewCache(m)
 	for start := 0; start < len(items); {
 		end, tokens := start, 0
 		for end < len(items) && (end == start || tokens+len(items[end].Seq.IDs) <= tokenBudget) {
@@ -68,7 +75,7 @@ func Predict(m *nn.Model, items []Item, tokenBudget int) ([][]float32, error) {
 		for i := start; i < end; i++ {
 			batch = append(batch, items[i].Seq)
 		}
-		logits, err := m.Forward(c, batch, 1<<20)
+		logits, err := fwd(batch)
 		if err != nil {
 			return nil, err
 		}
@@ -159,6 +166,9 @@ func ScoreWith(items []Item, logits [][]float32, tempFor func(kind string) float
 			a.m.MAE = a.mae / float64(a.m.nMAE)
 		}
 	}
+	for _, m := range rep.ByTask {
+		rep.MacroAcc += m.Acc / float64(len(rep.ByTask))
+	}
 	return rep
 }
 
@@ -173,6 +183,7 @@ func (r *Report) String() string {
 		fmt.Fprintf(&b, "  %-18s n=%-5d acc %5.1f%%  nll %.3f  ece %.3f%s\n", name, m.N, 100*m.Acc, m.NLL, m.ECE, mae)
 	}
 	row("OVERALL", &r.Overall)
+	fmt.Fprintf(&b, "  %-18s %5.1f%%   (mean of per-task accuracies)\n", "MACRO", 100*r.MacroAcc)
 	for _, k := range sortedKeys(r.ByKind) {
 		row("kind:"+k, r.ByKind[k])
 	}

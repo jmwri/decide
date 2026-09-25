@@ -4,29 +4,41 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
-// parallelFor splits [0,n) into contiguous chunks, one goroutine each.
+// parallelFor splits [0,n) into small contiguous chunks that a pool of
+// goroutines pulls dynamically, so a core that is busy with another process
+// (or a chunk that is unusually expensive) does not stall everyone else.
 func parallelFor(n int, fn func(lo, hi int)) {
 	workers := runtime.GOMAXPROCS(0)
+	if n <= 0 {
+		return
+	}
 	if workers > n {
 		workers = n
 	}
 	if workers <= 1 {
-		if n > 0 {
-			fn(0, n)
-		}
+		fn(0, n)
 		return
 	}
+	chunk := max(1, (n+4*workers-1)/(4*workers))
+	chunks := (n + chunk - 1) / chunk
+	var next atomic.Int64
 	var wg sync.WaitGroup
-	chunk := (n + workers - 1) / workers
-	for lo := 0; lo < n; lo += chunk {
-		hi := min(lo+chunk, n)
+	for w := 0; w < min(workers, chunks); w++ {
 		wg.Add(1)
-		go func(lo, hi int) {
+		go func() {
 			defer wg.Done()
-			fn(lo, hi)
-		}(lo, hi)
+			for {
+				c := int(next.Add(1)) - 1
+				if c >= chunks {
+					return
+				}
+				lo := c * chunk
+				fn(lo, min(lo+chunk, n))
+			}
+		}()
 	}
 	wg.Wait()
 }

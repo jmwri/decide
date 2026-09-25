@@ -145,7 +145,7 @@ func Tasks() []Task {
 	tasks := []Task{
 		// ---- NLI
 		{Name: "mnli", License: "cc-by-3.0/cc-by-sa-3.0/mit/other", Train: Source{Repo: "nyu-mll/multi_nli", Split: "train"}, Val: Source{Repo: "nyu-mll/multi_nli", Split: "validation_matched"},
-			TrainCap: 24000, ValCap: 300, ScanCap: 120000, MaxFiles: 1,
+			TrainCap: 30000, ValCap: 300, ScanCap: 120000, MaxFiles: 1,
 			Prepare: static(func(r *rand.Rand, row Row) []Example {
 				return nliExample(r, "mnli", row.Str("premise"), row.Str("hypothesis"), row.Int("label"))
 			})},
@@ -211,7 +211,7 @@ func Tasks() []Task {
 			TrainCap: 10000, ValCap: 300, Optional: true, DeriveNames: "label_text",
 			Prepare: namedIntent("banking77", "Customer is asking about", "label_text")},
 		{Name: "clinc150", License: "cc-by-3.0", Train: Source{Repo: "clinc/clinc_oos", Config: "plus", Split: "train"}, Val: Source{Repo: "clinc/clinc_oos", Config: "plus", Split: "validation"},
-			TrainCap: 12000, ValCap: 300,
+			TrainCap: 15000, ValCap: 300,
 			Prepare: func(meta Meta) Converter {
 				names := labelNames(meta, "intent")
 				ct := intentTask("clinc150", "User wants help with", names)
@@ -239,20 +239,6 @@ func Tasks() []Task {
 						return nil
 					}
 					return []Example{ct.Make(r, fields(r, "title", oneLine(row.Str("title")), "text", body), i)}
-				}
-			}},
-		{Name: "ag_news", License: "unknown", Train: Source{Repo: "fancyzhx/ag_news", Split: "train"}, Val: Source{Repo: "fancyzhx/ag_news", Split: "test"},
-			TrainCap: 6000, ValCap: 300, Optional: true,
-			Prepare: func(meta Meta) Converter {
-				names := []string{"World news", "Sports", "Business", "Science and technology"}
-				ct := topicTask("ag_news", names, []string{"What is the topic of this news article?", "Which section of the newspaper does this belong in?", "Categorise the article."})
-				return func(r *rand.Rand, row Row) []Example {
-					i := row.Int("label")
-					text := clip(oneLine(row.Str("text")), 900)
-					if i < 0 || i >= len(names) || text == "" {
-						return nil
-					}
-					return []Example{ct.Make(r, text, i)}
 				}
 			}},
 		{Name: "sst2", License: "other (GLUE)", Train: Source{Repo: "nyu-mll/glue", Config: "sst2", Split: "train"}, Val: Source{Repo: "nyu-mll/glue", Config: "sst2", Split: "validation"},
@@ -326,7 +312,7 @@ func Tasks() []Task {
 				return arcLike(r, "commonsense_qa", row, ch)
 			})},
 		{Name: "hellaswag", License: "mit", Train: Source{Repo: "Rowan/hellaswag", Split: "train"}, Val: Source{Repo: "Rowan/hellaswag", Split: "validation"},
-			TrainCap: 9000, ValCap: 300, ScanCap: 40000, MaxFiles: 1,
+			TrainCap: 22000, ValCap: 300, ScanCap: 40000, MaxFiles: 1,
 			Prepare: static(func(r *rand.Rand, row Row) []Example {
 				ctx := clip(oneLine(row.Str("ctx")), 600)
 				gold := row.Int("label")
@@ -337,7 +323,7 @@ func Tasks() []Task {
 				return one(e, ok && ctx != "")
 			})},
 		{Name: "winogrande", License: "cc-by-4.0", Train: Source{Repo: "allenai/winogrande", Config: "winogrande_xl", Split: "train"}, Val: Source{Repo: "allenai/winogrande", Config: "winogrande_xl", Split: "validation"},
-			TrainCap: 8000, ValCap: 300,
+			TrainCap: 22000, ValCap: 300,
 			Prepare: static(func(r *rand.Rand, row Row) []Example {
 				gold := row.Int("answer") - 1
 				if s := row.Str("answer"); s == "1" || s == "2" {
@@ -379,14 +365,6 @@ func Tasks() []Task {
 				e, ok := mcExample(r, "mmlu", q, []string{"Choose the correct answer.", "Which option is correct?", "Select the best answer."}, row.Strings("choices"), row.Int("answer"))
 				return one(e, ok && q != "")
 			})},
-		{Name: "sms_spam", License: "unknown (UCI)", Holdout: true, Val: Source{Repo: "ucirvine/sms_spam", Config: "plain_text", Split: "train"}, ValCap: 1200,
-			Prepare: static(func(r *rand.Rand, row Row) []Example {
-				s := oneLine(row.Str("sms"))
-				if s == "" {
-					return nil
-				}
-				return []Example{noulExample(r, "sms_spam", s, pick(r, []string{"Is this message spam?", "Is this an unsolicited promotional text message?"}), row.Int("label") == 1, "", "")}
-			})},
 		{Name: "emotion", License: "other (dair-ai)", Holdout: true, Val: Source{Repo: "dair-ai/emotion", Config: "split", Split: "test"}, ValCap: 1000,
 			Prepare: func(meta Meta) Converter {
 				names := labelNames(meta, "label")
@@ -404,7 +382,66 @@ func Tasks() []Task {
 					return []Example{ct.Make(r, text, i)}
 				}
 			}},
-		{Name: "stsb", License: "other (GLUE)", Holdout: true, Val: Source{Repo: "nyu-mll/glue", Config: "stsb", Split: "validation"}, ValCap: 1000,
+
+		// ---- added in the second corpus: intents, topics, spam, toxicity, science QA, similarity
+		{Name: "massive_intent", License: "apache-2.0", Train: Source{Repo: "mteb/amazon_massive_intent", Config: "en", Split: "train"}, Val: Source{Repo: "mteb/amazon_massive_intent", Config: "en", Split: "validation"},
+			TrainCap: 11500, ValCap: 300, DeriveNames: "label_text", Optional: true,
+			Prepare: namedIntent("massive_intent", "User request about", "label_text")},
+		{Name: "massive_scenario", License: "apache-2.0", Train: Source{Repo: "mteb/amazon_massive_scenario", Config: "en", Split: "train"}, Val: Source{Repo: "mteb/amazon_massive_scenario", Config: "en", Split: "validation"},
+			TrainCap: 11500, ValCap: 300, DeriveNames: "label_text", Optional: true,
+			Prepare: namedIntent("massive_scenario", "Request in the area of", "label_text")},
+		{Name: "newsgroups", License: "unspecified (SetFit/20_newsgroups)", Train: Source{Repo: "SetFit/20_newsgroups", Split: "train"}, Val: Source{Repo: "SetFit/20_newsgroups", Split: "test"},
+			TrainCap: 11000, ValCap: 300, DeriveNames: "label_text", Optional: true,
+			Prepare: func(meta Meta) Converter {
+				names := meta.Names[derivedNames]
+				ct := topicTask("newsgroups", names, []string{"Which discussion group does this post belong to?", "What is this post about?", "Categorise the message by topic."})
+				idx := map[string]int{}
+				for i, n := range names {
+					idx[n] = i
+				}
+				return func(r *rand.Rand, row Row) []Example {
+					i, ok := idx[row.Str("label_text")]
+					text := clip(oneLine(row.Str("text")), 700)
+					if !ok || text == "" {
+						return nil
+					}
+					return []Example{ct.Make(r, text, i)}
+				}
+			}},
+		{Name: "qasc", License: "cc-by-4.0", Train: Source{Repo: "allenai/qasc", Split: "train"}, Val: Source{Repo: "allenai/qasc", Split: "validation"},
+			TrainCap: 8000, ValCap: 250,
+			Prepare: static(func(r *rand.Rand, row Row) []Example {
+				ch, _ := row["choices"].(map[string]any)
+				return arcLike(r, "qasc", row, ch)
+			})},
+		{Name: "openbookqa", License: "unknown", Train: Source{Repo: "allenai/openbookqa", Config: "main", Split: "train"}, Val: Source{Repo: "allenai/openbookqa", Config: "main", Split: "validation"},
+			TrainCap: 5000, ValCap: 250,
+			Prepare: static(func(r *rand.Rand, row Row) []Example {
+				ch, _ := row["choices"].(map[string]any)
+				row["question"] = row["question_stem"]
+				return arcLike(r, "openbookqa", row, ch)
+			})},
+		{Name: "toxic_conversations", License: "cc-by-4.0", Train: Source{Repo: "mteb/toxic_conversations_50k", Split: "train"}, Val: Source{Repo: "mteb/toxic_conversations_50k", Split: "test"},
+			TrainCap: 30000, ValCap: 600, ScanCap: 60000, Optional: true,
+			Prepare: static(func(r *rand.Rand, row Row) []Example {
+				text := clip(oneLine(row.Str("text")), 900)
+				toxic := row.Int("label") == 1
+				// about 8% of the source is toxic: keep every toxic row but only some clean ones
+				if text == "" || (!toxic && r.Float64() > 0.14) {
+					return nil
+				}
+				q := pick(r, []string{"Is this comment toxic?", "Does this comment contain abuse, harassment or hate?", "Should this comment be flagged for moderation?", "Is the tone of this comment hostile or offensive?"})
+				return []Example{noulExample(r, "toxic_conversations", text, q, toxic, "", "")}
+			})},
+		{Name: "sms_spam", License: "unknown (UCI)", Train: Source{Repo: "ucirvine/sms_spam", Config: "plain_text", Split: "train"}, Val: Source{Repo: "ucirvine/sms_spam", Config: "plain_text", Split: "train"}, TrainCap: 4500, ValCap: 300,
+			Prepare: static(func(r *rand.Rand, row Row) []Example {
+				s := oneLine(row.Str("sms"))
+				if s == "" {
+					return nil
+				}
+				return []Example{noulExample(r, "sms_spam", s, pick(r, []string{"Is this message spam?", "Is this an unsolicited promotional text message?"}), row.Int("label") == 1, "", "")}
+			})},
+		{Name: "stsb", License: "other (GLUE)", Train: Source{Repo: "nyu-mll/glue", Config: "stsb", Split: "train"}, Val: Source{Repo: "nyu-mll/glue", Config: "stsb", Split: "validation"}, TrainCap: 5800, ValCap: 300,
 			Prepare: func(Meta) Converter {
 				st := &ScaleTask{Name: "stsb",
 					Levels: [][]string{
@@ -423,6 +460,36 @@ func Tasks() []Task {
 					}
 					level := int(math.Round(row.Float("label")))
 					return []Example{st.Make(r, fields(r, "sentence 1", a, "sentence 2", b), min(max(level, 0), 5))}
+				}
+			}},
+
+		// ---- more holdouts: a different spam corpus and a different ordinal domain
+		{Name: "enron_spam", License: "unspecified (SetFit/enron_spam)", Holdout: true, Val: Source{Repo: "SetFit/enron_spam", Split: "test"}, ValCap: 1000, Optional: true,
+			Prepare: static(func(r *rand.Rand, row Row) []Example {
+				text := clip(oneLine(row.Str("text")), 800)
+				if text == "" {
+					return nil
+				}
+				return []Example{noulExample(r, "enron_spam", text, pick(r, []string{"Is this email spam?", "Is this an unsolicited or fraudulent email?"}), row.Int("label") == 1, "", "")}
+			})},
+		{Name: "amazon_stars", License: "unspecified (mteb/amazon_reviews_multi)", Holdout: true, Val: Source{Repo: "mteb/amazon_reviews_multi", Config: "en", Split: "test"}, ValCap: 1000, Optional: true,
+			Prepare: func(Meta) Converter {
+				st := &ScaleTask{Name: "amazon_stars",
+					Levels: [][]string{
+						{"1 star", "Terrible: the reviewer is very unhappy with the product.", "Very negative"},
+						{"2 stars", "Poor: the reviewer is disappointed.", "Negative"},
+						{"3 stars", "Average: mixed feelings about the product.", "Mixed"},
+						{"4 stars", "Good: the reviewer is satisfied.", "Positive"},
+						{"5 stars", "Excellent: the reviewer loves the product.", "Very positive"},
+					},
+					Instructions: []string{"How many stars did the reviewer give?", "Rate the product review on a five-star scale.", "What rating does this review imply?"}}
+				return func(r *rand.Rand, row Row) []Example {
+					text := clip(oneLine(row.Str("text")), 800)
+					l := row.Int("label")
+					if text == "" || l < 0 || l > 4 {
+						return nil
+					}
+					return []Example{st.Make(r, text, l)}
 				}
 			}},
 	}

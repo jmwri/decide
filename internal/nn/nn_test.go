@@ -3,6 +3,7 @@ package nn
 import (
 	"encoding/json"
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/jmwri/decide/internal/safetensors"
@@ -200,6 +201,31 @@ func TestOrderInvariance(t *testing.T) {
 	for slot, k := range perm {
 		if d := math.Abs(float64(got[slot] - orig[k])); d > 1e-5 {
 			t.Fatalf("option %d moved to slot %d: %v vs %v", k, slot, orig[k], got[slot])
+		}
+	}
+}
+
+// Every index must be visited exactly once, whatever the size and however the
+// chunks are handed out.
+func TestParallelForCoversRangeOnce(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 7, 63, 64, 65, 1000, 4097} {
+		hits := make([]int32, max(n, 1))
+		var mu sync.Mutex
+		parallelFor(n, func(lo, hi int) {
+			if lo < 0 || hi > n || lo >= hi {
+				t.Errorf("n=%d: bad chunk [%d,%d)", n, lo, hi)
+				return
+			}
+			mu.Lock()
+			for i := lo; i < hi; i++ {
+				hits[i]++
+			}
+			mu.Unlock()
+		})
+		for i := 0; i < n; i++ {
+			if hits[i] != 1 {
+				t.Fatalf("n=%d: index %d visited %d times", n, i, hits[i])
+			}
 		}
 	}
 }

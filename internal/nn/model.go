@@ -233,6 +233,12 @@ func (m *Model) LoadWeights(path string) error {
 	return nil
 }
 
+// RopeTables returns the cos and sin tables (len(pos) x headDim/2) of rotary
+// position embeddings for the given position ids.
+func RopeTables(pos []int32, headDim int, theta float64) (cos, sin []float32) {
+	return ropeTables(pos, headDim, theta)
+}
+
 func ropeTables(pos []int32, headDim int, theta float64) (cos, sin []float32) {
 	half := headDim / 2
 	inv := make([]float64, half)

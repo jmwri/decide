@@ -21,15 +21,18 @@ import (
 	"github.com/jmwri/decide/internal/train"
 )
 
-const usage = `decide-train: train the Decide option-scoring model.
+const usage = `decide-train: build, train, evaluate and publish the Decide model (pure Go; CPU or NVIDIA GPU).
 
-  decide-train data  --dir DIR [--only a,b] [--scale X]     download public datasets, build train/val/ood JSONL
-  decide-train train --data DIR --base DIR --out DIR [...]  fine-tune ModernBERT-base (resumable with --resume)
-  decide-train eval  --model FILE --base DIR --data DIR     accuracy / calibration report on val or ood
-  decide-train card   --bundle DIR --repo USER/NAME          write README.md (model card) into a bundle
-  decide-train publish --bundle DIR --repo USER/NAME --yes   upload a bundle to the Hugging Face hub (needs $HF_TOKEN)
-  decide-train export --model FILE --base DIR --data DIR --out DIR --id decide-0.1.0
-                                                             calibrate and write a model bundle for inference
+  decide-train data    --dir DIR [--only a,b] [--scale X]   download public datasets, build train/val/ood JSONL
+  decide-train train   --data DIR --base DIR --out DIR      fine-tune ModernBERT-base (--gpu auto|on|off, --resume,
+                       [--epochs N] [--init MODEL] ...      --init to continue from a trained model)
+  decide-train eval    --model FILE --base DIR --data DIR   accuracy / calibration report on --split val|ood
+  decide-train export  --model FILE --base DIR --data DIR --out DIR --id decide-0.2.0
+                                                            calibrate and write a model bundle for inference
+  decide-train card    --bundle DIR --repo USER/NAME        write README.md (model card) into a bundle
+  decide-train publish --bundle DIR --repo USER/NAME --yes  upload a bundle to the Hugging Face hub ($HF_TOKEN)
+
+See docs/training.md.
 `
 
 func main() {
@@ -100,12 +103,14 @@ func runTrain(ctx context.Context, args []string) error {
 	fs.Float64Var(&c.Epochs, "epochs", 1, "passes over the training set")
 	fs.IntVar(&c.MaxExamples, "max-examples", 0, "use only this many training examples per epoch (0 = all)")
 	fs.IntVar(&c.BatchExamples, "batch", 32, "examples per optimizer step")
-	fs.IntVar(&c.TokenBudget, "token-budget", 1200, "tokens per micro-batch")
+	fs.IntVar(&c.TokenBudget, "token-budget", 0, "tokens per micro-batch (default 1200 on the CPU, 4000 on a GPU)")
+	fs.StringVar(&c.GPU, "gpu", "auto", "use an NVIDIA GPU: auto, on or off")
 	fs.IntVar(&c.MaxLen, "max-len", 384, "longest packed sequence")
 	fs.IntVar(&c.KMax, "kmax", 10, "most options shown per example")
 	fs.Float64Var(&c.LR, "lr", 4e-5, "encoder learning rate")
 	fs.Float64Var(&c.HeadLR, "head-lr", 3e-4, "scorer head learning rate")
 	fs.Float64Var(&c.WeightDecay, "wd", 0.01, "weight decay")
+	fs.StringVar(&c.InitModel, "init", "", "start from this trained model.safetensors instead of the base model")
 	fs.IntVar(&c.TrainFrom, "train-from", 0, "freeze encoder layers below this index")
 	noEmb := fs.Bool("freeze-embeddings", false, "do not train the token embeddings")
 	fs.IntVar(&c.EvalEvery, "eval-every", 250, "steps between validation runs")
@@ -142,6 +147,7 @@ func runEval(ctx context.Context, args []string) error {
 	perTask := fs.Int("per-task", 0, "examples per task (0 = all)")
 	temp := fs.Float64("temp", 1, "softmax temperature")
 	kmax := fs.Int("kmax", 10, "most options shown per example")
+	gpu := fs.String("gpu", "auto", "use an NVIDIA GPU: auto, on or off")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -163,7 +169,13 @@ func runEval(ctx context.Context, args []string) error {
 	}
 	items := train.PrepareEval(tok, exs, *perTask, *kmax, 384, true)
 	logf("evaluating %d examples", len(items))
-	logits, err := train.Predict(m, items, 2000)
+	fwd, closeFn, where, err := train.NewInferer(m, *gpu, logf)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	logf("scoring on %s", where)
+	logits, err := train.PredictWith(fwd, items, 4000)
 	if err != nil {
 		return err
 	}
@@ -180,6 +192,7 @@ func runExport(ctx context.Context, args []string) error {
 	fs.StringVar(&c.OutDir, "out", "", "bundle directory to write")
 	fs.StringVar(&c.ModelID, "id", "decide-0.1.0", "model id stamped on responses")
 	fs.IntVar(&c.KMax, "kmax", 10, "most options shown per example")
+	fs.StringVar(&c.GPU, "gpu", "auto", "use an NVIDIA GPU: auto, on or off")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

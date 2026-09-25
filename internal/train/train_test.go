@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jmwri/decide/internal/bundle"
+	"github.com/jmwri/decide/internal/cuda"
 	"github.com/jmwri/decide/internal/data"
 	"github.com/jmwri/decide/internal/nn"
 	"github.com/jmwri/decide/internal/tokenizer"
@@ -222,7 +223,7 @@ func TestAdamWUpdatesOnlyTrainable(t *testing.T) {
 	for _, tt := range m.Tensors() {
 		before[tt.Name] = tt.Data[0]
 	}
-	opt := NewAdamW(m, g, 0.01, 2, false) // freeze layers 0-1 and embeddings
+	opt := NewAdamW(m, g, 0.01, 2, false, false) // freeze layers 0-1 and embeddings
 	opt.Update(1e-2, 1e-2, 1)
 	after := map[string]float32{}
 	for _, tt := range m.Tensors() {
@@ -291,12 +292,28 @@ func toyCorpus(t *testing.T, n int) string {
 	return dir
 }
 
+// gpuModes lists the engines to test: always the CPU, plus the GPU when present.
+func gpuModes(t *testing.T) []string {
+	modes := []string{GPUOff}
+	if d, err := cuda.Open(); err == nil {
+		d.Close()
+		modes = append(modes, GPUOn)
+	}
+	return modes
+}
+
 func TestRunLearnsAndResumes(t *testing.T) {
+	for _, mode := range gpuModes(t) {
+		t.Run("gpu="+mode, func(t *testing.T) { runLearnsAndResumes(t, mode) })
+	}
+}
+
+func runLearnsAndResumes(t *testing.T, mode string) {
 	base, corpus, out := tinyBase(t), toyCorpus(t, 1920), t.TempDir()
 	var lines []string
 	cfg := Config{
 		DataDir: corpus, BaseDir: base, OutDir: out, Epochs: 1, BatchExamples: 16, TokenBudget: 800, MaxLen: 128, KMax: 4,
-		LR: 2e-3, HeadLR: 2e-3, EvalEvery: 1000, EvalPerTask: 40, SaveEvery: 40, LogEvery: 1, TrainEmb: true, Independent: true, Seed: 3,
+		LR: 2e-3, HeadLR: 2e-3, EvalEvery: 1000, EvalPerTask: 40, SaveEvery: 40, LogEvery: 1, TrainEmb: true, Independent: true, Seed: 3, GPU: mode,
 		Log: func(f string, a ...any) { lines = append(lines, f) },
 	}
 	// First half of the run, then resume for the rest.
@@ -385,4 +402,67 @@ func TestModelCard(t *testing.T) {
 	if !strings.HasPrefix(card, "---\n") {
 		t.Error("model card needs YAML front matter")
 	}
+}
+
+// --init must start from a previously trained model rather than a fresh head.
+func TestRunInitialisesFromTrainedModel(t *testing.T) {
+	for _, mode := range gpuModes(t) {
+		t.Run("gpu="+mode, func(t *testing.T) { runInitialises(t, mode) })
+	}
+}
+
+func runInitialises(t *testing.T, mode string) {
+	base, corpus, out1, out2 := tinyBase(t), toyCorpus(t, 640), t.TempDir(), t.TempDir()
+	cfg := Config{
+		DataDir: corpus, BaseDir: base, OutDir: out1, Epochs: 1, BatchExamples: 16, TokenBudget: 800, MaxLen: 128, KMax: 4,
+		LR: 2e-3, HeadLR: 2e-3, EvalEvery: 1000, EvalPerTask: 40, SaveEvery: 1000, LogEvery: 1000, TrainEmb: true, Independent: true, Seed: 3, GPU: mode,
+	}
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Continue for zero effective learning rate: the result must equal the init model.
+	next := cfg
+	next.OutDir, next.InitModel, next.LR, next.HeadLR, next.MaxExamples, next.Epochs = out2, filepath.Join(out1, "model.safetensors"), 1e-12, 1e-12, 64, 1
+	if err := Run(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+	a, b := loadTiny(t, base, filepath.Join(out1, "model.safetensors")), loadTiny(t, base, filepath.Join(out2, "model.safetensors"))
+	fresh := loadTiny(t, base, "")
+	if d := maxDiff(a, b); d > 1e-4 {
+		t.Fatalf("continued model drifted from its init by %g", d)
+	}
+	if d := maxDiff(a, fresh); d < 1e-3 {
+		t.Fatal("trained model should differ from the untrained base")
+	}
+}
+
+func loadTiny(t *testing.T, base, weights string) *nn.Model {
+	t.Helper()
+	cfg, err := nn.LoadConfig(filepath.Join(base, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := nn.New(cfg)
+	if weights == "" {
+		m, err = LoadBase(base, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if err := m.LoadWeights(weights); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func maxDiff(a, b *nn.Model) float64 {
+	var worst float64
+	bt := b.Tensors()
+	for i, ta := range a.Tensors() {
+		for j := range ta.Data {
+			worst = math.Max(worst, math.Abs(float64(ta.Data[j]-bt[i].Data[j])))
+		}
+	}
+	return worst
 }

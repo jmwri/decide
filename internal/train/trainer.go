@@ -26,7 +26,8 @@ type Config struct {
 	Epochs        float64 // passes over the (possibly capped) training set
 	MaxExamples   int     // cap on training examples per epoch (0 = all)
 	BatchExamples int     // examples per optimizer step
-	TokenBudget   int     // tokens per forward/backward micro-batch
+	TokenBudget   int     // tokens per micro-batch (default 1200 on the CPU, 4000 on a GPU)
+	GPU           string  // "auto" (default), "on" or "off"
 	MaxLen        int     // longest packed sequence
 	KMax          int     // most options shown per example
 
@@ -35,6 +36,10 @@ type Config struct {
 	Warmup      float64 // fraction of steps
 	MinLRFrac   float64 // final LR as a fraction of LR
 	ClipNorm    float64
+
+	// InitModel, when set, starts from a previously trained model.safetensors
+	// (encoder and scorer head) instead of ModernBERT-base plus a fresh head.
+	InitModel string
 
 	TrainFrom int // freeze encoder layers below this index
 	TrainEmb  bool
@@ -66,7 +71,6 @@ func (c *Config) Defaults() {
 	}
 	setF(&c.Epochs, 1)
 	setI(&c.BatchExamples, 32)
-	setI(&c.TokenBudget, 1200)
 	setI(&c.MaxLen, 384)
 	setI(&c.KMax, 10)
 	setF(&c.LR, 4e-5)
@@ -176,8 +180,24 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if cfg.InitModel != "" {
+		if err := model.LoadWeights(cfg.InitModel); err != nil {
+			return fmt.Errorf("loading --init model: %w", err)
+		}
+		cfg.logf("initialised from %s", cfg.InitModel)
+	}
+	dev, err := openDevice(cfg.GPU, cfg.logf)
+	if err != nil {
+		return err
+	}
+	if cfg.TokenBudget == 0 {
+		cfg.TokenBudget = 1200
+		if dev != nil {
+			cfg.TokenBudget = 4000
+		}
+	}
 	grads := nn.NewLike(model)
-	opt := NewAdamW(model, grads, float32(cfg.WeightDecay), cfg.TrainFrom, cfg.TrainEmb)
+	opt := NewAdamW(model, grads, float32(cfg.WeightDecay), cfg.TrainFrom, cfg.TrainEmb, dev != nil)
 	cfg.logf("model: %d parameters, %d layers; training from layer %d (embeddings: %v)", model.NumParams(), model.Cfg.Layers, cfg.TrainFrom, cfg.TrainEmb)
 
 	st := State{}
@@ -194,7 +214,19 @@ func Run(ctx context.Context, cfg Config) error {
 	evalItems := PrepareEval(tok, valExs, cfg.EvalPerTask, cfg.KMax, cfg.MaxLen, cfg.Independent)
 	cfg.logf("validation subset: %d examples", len(evalItems))
 
-	cache := nn.NewCache(model)
+	var eng Engine
+	if dev != nil {
+		ge, err := newGPUEngine(dev, model, grads, opt, &cfg)
+		if err != nil {
+			dev.Close()
+			return err
+		}
+		eng = ge
+	} else {
+		eng = newCPUEngine(model, grads, opt, &cfg)
+	}
+	defer eng.Close()
+	cfg.logf("training on %s, micro-batches of up to %d tokens", eng.Name(), cfg.TokenBudget)
 	start := time.Now()
 	offset := st.Elapsed
 	var order []int
@@ -203,6 +235,9 @@ func Run(ctx context.Context, cfg Config) error {
 
 	save := func() error {
 		st.Elapsed = offset + time.Since(start).Seconds()
+		if err := eng.PrepareSave(); err != nil {
+			return err
+		}
 		dir := filepath.Join(cfg.OutDir, fmt.Sprintf("ckpt-%06d", st.Step))
 		if err := saveCheckpoint(dir, model, opt, &st); err != nil {
 			return err
@@ -216,7 +251,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return
 		}
 		t0 := time.Now()
-		logits, err := Predict(model, evalItems, 2000)
+		logits, err := PredictWith(eng.Infer, evalItems, max(2000, cfg.TokenBudget))
 		if err != nil {
 			cfg.logf("eval failed: %v", err)
 			return
@@ -266,7 +301,7 @@ func Run(ctx context.Context, cfg Config) error {
 			for i := range micro {
 				batch[i] = micro[i].Seq
 			}
-			logits, err := model.Forward(cache, batch, cfg.TrainFrom)
+			logits, err := eng.Forward(batch)
 			if err != nil {
 				return err
 			}
@@ -288,18 +323,20 @@ func Run(ctx context.Context, cfg Config) error {
 				}
 				off += k
 			}
-			model.Backward(cache, dl, grads, cfg.TrainEmb)
+			if err := eng.Backward(dl); err != nil {
+				return err
+			}
 			tokens += tk
 			lo = hi
 		}
-		gn := opt.GradNorm()
+		gn := eng.GradNorm()
 		scale := float32(1)
 		if cfg.ClipNorm > 0 && gn > cfg.ClipNorm {
 			scale = float32(cfg.ClipNorm / (gn + 1e-6))
 		}
 		lr, headLR := lrAt(&cfg, st.Step, totalSteps)
-		opt.Update(float32(lr), float32(headLR), scale)
-		grads.Zero()
+		eng.Update(float32(lr), float32(headLR), scale)
+		eng.ZeroGrad()
 		st.Step++
 
 		loss, acc := lossSum/float64(len(items)), correct/float64(len(items))
@@ -327,6 +364,9 @@ func Run(ctx context.Context, cfg Config) error {
 		evaluate()
 	}
 	if err := save(); err != nil {
+		return err
+	}
+	if err := eng.PrepareSave(); err != nil {
 		return err
 	}
 	final := filepath.Join(cfg.OutDir, "model.safetensors")

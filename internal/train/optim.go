@@ -27,8 +27,9 @@ type AdamW struct {
 }
 
 // NewAdamW builds an optimizer. trainFrom freezes encoder layers below it and
-// trainEmb controls the token embeddings.
-func NewAdamW(model, grads *nn.Model, wd float32, trainFrom int, trainEmb bool) *AdamW {
+// trainEmb controls the token embeddings. With headOnly every encoder tensor
+// (embeddings and layers) is frozen here, because the GPU optimises them.
+func NewAdamW(model, grads *nn.Model, wd float32, trainFrom int, trainEmb, headOnly bool) *AdamW {
 	o := &AdamW{Beta1: 0.9, Beta2: 0.999, Eps: 1e-8, WeightDecay: wd}
 	o.M, o.V = nn.NewLike(model), nn.NewLike(model)
 	o.params, o.grads, o.m, o.v = model.Tensors(), grads.Tensors(), o.M.Tensors(), o.V.Tensors()
@@ -50,6 +51,9 @@ func NewAdamW(model, grads *nn.Model, wd float32, trainFrom int, trainEmb bool) 
 				l = l*10 + int(ch-'0')
 			}
 			frozen = l < trainFrom
+		}
+		if headOnly && (strings.HasPrefix(t.Name, "model.embeddings.") || strings.HasPrefix(t.Name, "model.layers.")) {
+			frozen = true
 		}
 		o.frozen = append(o.frozen, frozen)
 		o.head = append(o.head, head)

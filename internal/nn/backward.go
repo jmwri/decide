@@ -21,42 +21,12 @@ func (m *Model) Backward(c *Cache, dlogits []float32, g *Model, trainEmb bool) {
 	cfg := m.Cfg
 	H, I, D, L := cfg.Hidden, cfg.Intermediate, cfg.HeadDim(), cfg.Layers
 	T, R := c.T, c.R
-	half := H / 2
-	h, gh := &m.Head, &g.Head
-
-	// ---- scorer head
-	ds2 := make([]float32, R*half)
-	for r := 0; r < R; r++ {
-		dl := dlogits[r]
-		gh.OutB[0] += dl
-		row := c.s2[r*half : (r+1)*half]
-		for i := 0; i < half; i++ {
-			gh.OutW[i] += dl * row[i]
-			ds2[r*half+i] = dl * h.OutW[i]
-		}
-	}
-	dge := make([]float32, R*half)
-	layerNormBwd(dge, ds2, c.ge, R, half, h.NormW, c.m2, c.r2, gh.NormW, gh.NormB)
-	dd := make([]float32, R*half)
-	for r := 0; r < R; r++ {
-		for i := 0; i < half; i++ {
-			v := dge[r*half+i] * geluGrad(c.d[r*half+i])
-			dd[r*half+i] = v
-			gh.DenseB[i] += v
-		}
-	}
-	blas.Sgemm(true, false, half, H, R, dd, half, c.s1, H, gh.DenseW, H, true)
-	ds1 := make([]float32, R*H)
-	blas.Sgemm(false, false, R, H, half, dd, half, h.DenseW, H, ds1, H, false)
-	dfN := make([]float32, R*H)
-	layerNormBwd(dfN, ds1, c.fN, R, H, h.InW, c.m1, c.r1, gh.InW, gh.InB)
-	rows := make([]float32, R*H)
 	hL := c.hs[L]
+	rows := make([]float32, R*H)
 	for r, t := range c.rowTok {
 		copy(rows[r*H:(r+1)*H], hL[t*H:(t+1)*H])
 	}
-	dRows := make([]float32, R*H)
-	layerNormBwd(dRows, dfN, rows, R, H, m.FinalNorm, c.fMean, c.fRstd, g.FinalNorm, nil)
+	dRows := m.HeadBackward(c, rows, dlogits, g)
 	c.dcur = zeros(c.dcur, T*H)
 	for r, t := range c.rowTok {
 		copy(c.dcur[t*H:(t+1)*H], dRows[r*H:(r+1)*H])
@@ -182,4 +152,45 @@ func (c *Cache) attnBwd(dqkv, dctx, qkv, P []float32) {
 			blas.Sgemm1(true, false, n, D, n, dP, n, q, stride, dqkv[s.off*stride+H+hd*D:], stride, false)
 		}
 	})
+}
+
+// HeadBackward back-propagates dlogits through the scorer head and the final
+// norm, accumulating parameter gradients into g. rows are the same R x H
+// encoder rows passed to HeadForward; the result is the gradient with respect
+// to them.
+func (m *Model) HeadBackward(c *Cache, rows, dlogits []float32, g *Model) []float32 {
+	cfg := m.Cfg
+	H := cfg.Hidden
+	R := c.R
+	half := H / 2
+	h, gh := &m.Head, &g.Head
+
+	ds2 := make([]float32, R*half)
+	for r := 0; r < R; r++ {
+		dl := dlogits[r]
+		gh.OutB[0] += dl
+		row := c.s2[r*half : (r+1)*half]
+		for i := 0; i < half; i++ {
+			gh.OutW[i] += dl * row[i]
+			ds2[r*half+i] = dl * h.OutW[i]
+		}
+	}
+	dge := make([]float32, R*half)
+	layerNormBwd(dge, ds2, c.ge, R, half, h.NormW, c.m2, c.r2, gh.NormW, gh.NormB)
+	dd := make([]float32, R*half)
+	for r := 0; r < R; r++ {
+		for i := 0; i < half; i++ {
+			v := dge[r*half+i] * geluGrad(c.d[r*half+i])
+			dd[r*half+i] = v
+			gh.DenseB[i] += v
+		}
+	}
+	blas.Sgemm(true, false, half, H, R, dd, half, c.s1, H, gh.DenseW, H, true)
+	ds1 := make([]float32, R*H)
+	blas.Sgemm(false, false, R, H, half, dd, half, h.DenseW, H, ds1, H, false)
+	dfN := make([]float32, R*H)
+	layerNormBwd(dfN, ds1, c.fN, R, H, h.InW, c.m1, c.r1, gh.InW, gh.InB)
+	dRows := make([]float32, R*H)
+	layerNormBwd(dRows, dfN, rows, R, H, m.FinalNorm, c.fMean, c.fRstd, g.FinalNorm, nil)
+	return dRows
 }

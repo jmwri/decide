@@ -143,9 +143,13 @@ decide pull    [--repo HF_REPO] [--dir DIR]
 
 ## Training
 
-The whole pipeline is `decide-train`, a single Go binary. On the reference machine (Ryzen 7 5800X3D, 8 cores) the
-matrix-multiply kernel reaches 400–500 GFLOPS and a full fine-tune of ModernBERT-base (all 149M parameters) runs at
-about 500 tokens/s.
+The whole pipeline is `decide-train`, a single Go binary (full guide: [docs/training.md](docs/training.md)). Training runs on the CPU (about 450 tokens/s on a Ryzen
+7 5800X3D: a full fine-tune of ModernBERT-base's 149M parameters) or, much faster, on an **NVIDIA GPU**
+(about 7,000 tokens/s on an RTX 3090 Ti). The GPU path needs only the NVIDIA driver: no CUDA Toolkit, no cgo. Kernels
+are written in CUDA C (`internal/cuda/kernels`), compiled once to PTX with `go run ./cmd/ptxgen` (NVRTC, developers
+only) and embedded in the binary; the driver JIT-compiles them for whatever GPU is installed (Ampere or newer).
+`--gpu auto` (the default) uses a GPU when one is present, `--gpu off` forces the CPU. Both paths are checked against
+each other and against PyTorch in the tests.
 
 ```
 # 1. Build the corpus from public Hugging Face datasets (downloads parquet, no Python)
@@ -163,13 +167,13 @@ decide-train card    --bundle bundle --repo <user>/decide
 HF_TOKEN=... decide-train publish --bundle bundle --repo <user>/decide --yes
 ```
 
-**Data.** `internal/data` turns 24 public datasets (NLI, intent and topic classification, sentiment, emotion,
-toxicity, multiple-choice QA, yes/no QA and ordinal ratings) into *state + instruction + options* examples. Large
+**Data.** `internal/data` turns 32 public datasets (NLI, intent and topic classification, sentiment, emotion,
+toxicity, spam, multiple-choice QA, yes/no QA and ordinal ratings) into *state + instruction + options* examples. Large
 label spaces are sub-sampled to a random subset of at most 10 options that always contains the answer;
 classification tasks are also posed as yes/no verification questions; options are verbalised in several styles
-(bare label, descriptive sentence, ...). Four tasks (MMLU, SMS spam, dair-ai/emotion, STS-B) are held out
-entirely and only used to measure zero-shot behaviour. Training examples whose text also appears in the validation
-or held-out sets are dropped. The corpus manifest records every dataset's declared license.
+(bare label, descriptive sentence, ...). Four tasks (MMLU, dair-ai/emotion, Enron spam and Amazon star ratings) are
+held out entirely and only used to measure zero-shot behaviour. Training examples whose text also appears in the
+validation or held-out sets are dropped. The corpus manifest records every dataset's declared license.
 
 **Model.** ModernBERT-base plus a small scorer head (LayerNorm → Linear → GELU → LayerNorm → Linear) applied to the
 hidden state at every `[MASK]`. Trained with cross-entropy over the options (soft targets on neighbouring levels
@@ -178,15 +182,19 @@ for ordinal tasks), AdamW, linear warm-up and decay.
 **Calibration.** A softmax temperature per question kind is fitted on held-out validation data, which fixes
 over-confidence without changing any answer.
 
-**Verification.** The forward and backward passes are checked in tests against PyTorch autograd (every parameter's
-gradient) and against HuggingFace `transformers` on the real ModernBERT-base weights, in both attention modes.
-`go test ./...` also runs a toy end-to-end job that trains, resumes, exports and reloads a tiny model.
+**Verification.** The CPU forward and backward passes are checked in tests against PyTorch autograd (every parameter's
+gradient) and against HuggingFace `transformers` on the real ModernBERT-base weights, in both attention modes; the GPU
+implementation is checked against the CPU one tensor by tensor. `go test ./...` also runs a toy end-to-end job that
+trains, resumes, exports and reloads a tiny model (on the GPU too, when one is present). See
+[docs/training.md](docs/training.md) for the full training guide.
 
 ## Performance and limits
 
-- CPU only. The hot loops use an AVX2/FMA micro-kernel on amd64 and a portable fallback elsewhere (arm64 works
-  but is several times slower).
+- **Inference runs on the CPU** with no dependencies. The hot loops use an AVX2/FMA micro-kernel on amd64 and a
+  portable fallback elsewhere (arm64 works but is several times slower). A typical single question takes roughly
+  0.1-0.6 s on a modern 8-core machine.
 - Inference calls are serialised (each already uses every core); the server stays responsive.
+- **Training** can use an NVIDIA GPU (driver only, no CUDA Toolkit) for a ~15x speed-up; see [Training](#training).
 - Inputs are capped at 8192 tokens; keep option sets under about ten (use `TwoStageChoice` for larger taxonomies).
 - English only. Strongest on the kinds of task in the training corpus; give options descriptive text rather than
   bare labels.

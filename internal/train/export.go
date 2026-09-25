@@ -21,6 +21,7 @@ type ExportConfig struct {
 	OutDir    string
 	ModelID   string
 	KMax      int
+	GPU       string // "auto" (default), "on" or "off"
 	Log       func(format string, args ...any)
 }
 
@@ -50,9 +51,15 @@ func Export(cfg ExportConfig) error {
 	if err != nil {
 		return err
 	}
+	fwd, closeFn, where, err := NewInferer(model, cfg.GPU, logf)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	logf("scoring on %s", where)
 	val := PrepareEval(tok, valExs, 0, cfg.KMax, 384, true)
 	logf("calibrating on %d validation examples", len(val))
-	valLogits, err := Predict(model, val, 2000)
+	valLogits, err := PredictWith(fwd, val, 4000)
 	if err != nil {
 		return err
 	}
@@ -65,7 +72,7 @@ func Export(cfg ExportConfig) error {
 	reports := map[string]any{"val": valRep, "val_uncalibrated": Score(val, valLogits, 1)}
 	if oodExs, err := data.ReadJSONL(filepath.Join(cfg.DataDir, "ood.jsonl")); err == nil && len(oodExs) > 0 {
 		ood := PrepareEval(tok, oodExs, 0, cfg.KMax, 384, true)
-		oodLogits, err := Predict(model, ood, 2000)
+		oodLogits, err := PredictWith(fwd, ood, 4000)
 		if err != nil {
 			return err
 		}
