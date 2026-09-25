@@ -1,0 +1,12 @@
+/decide.exe
+/von
+*.exe
+*.part
+/checkpoints/
+*.pt
+*.safetensors
+.idea/
+.vscode/
+/.work/
+/decide-train.exe
+!/internal/nn/testdata/*.safetensors
