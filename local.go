@@ -19,7 +19,7 @@ import (
 const Version = "0.1"
 
 // ModelID is the identifier stamped on responses when a bundle names none.
-const ModelID = "decide-0.1.0"
+const ModelID = "decide-0.2.0"
 
 // ModelAliases are the names that resolve to the current model.
 var ModelAliases = []string{"decide-0.1", "0.1", "decide", "default", "latest", "decide-latest"}

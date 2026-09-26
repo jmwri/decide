@@ -160,7 +160,7 @@ decide-train data   --dir corpus
 decide-train train  --data corpus --base base --out run1 --max-examples 120000
 
 # 3. Evaluate, calibrate on held-out data, and write a model bundle
-decide-train export --model run1/model.safetensors --base base --data corpus --out bundle --id decide-0.1.0
+decide-train export --model run1/model.safetensors --base base --data corpus --out bundle --id decide-0.2.0
 
 # 4. Optional: model card + upload to the Hugging Face hub
 decide-train card    --bundle bundle --repo <user>/decide
@@ -187,6 +187,19 @@ gradient) and against HuggingFace `transformers` on the real ModernBERT-base wei
 implementation is checked against the CPU one tensor by tensor. `go test ./...` also runs a toy end-to-end job that
 trains, resumes, exports and reloads a tiny model (on the GPU too, when one is present). See
 [docs/training.md](docs/training.md) for the full training guide.
+
+**Results.** `decide-0.2.0` (trained on the GPU from ModernBERT-base for two epochs over the 302k-example corpus,
+about 1h45m on an RTX 3090 Ti) against `decide-0.1.0`, both scored on the same validation and held-out sets:
+
+| | decide-0.1.0 | decide-0.2.0 |
+|---|---|---|
+| Validation accuracy (8,127 examples) | 74.2% | 80.2% |
+| Validation NLL / ECE (calibrated) | 0.626 / 0.019 | 0.505 / 0.007 |
+| Held-out accuracy (4,500 examples, never trained on) | 44.2% | 47.6% |
+| Held-out macro accuracy | 45.6% | 49.2% |
+
+Held-out generalisation is the modest part: MMLU stays only slightly above chance (34.5%, four options), so treat the
+model as strongest on the kinds of task in its training corpus.
 
 ## Performance and limits
 

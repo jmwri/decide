@@ -190,7 +190,7 @@ func runExport(ctx context.Context, args []string) error {
 	fs.StringVar(&c.BaseDir, "base", "", "ModernBERT-base directory")
 	fs.StringVar(&c.DataDir, "data", "corpus", "corpus directory")
 	fs.StringVar(&c.OutDir, "out", "", "bundle directory to write")
-	fs.StringVar(&c.ModelID, "id", "decide-0.1.0", "model id stamped on responses")
+	fs.StringVar(&c.ModelID, "id", "decide-0.2.0", "model id stamped on responses")
 	fs.IntVar(&c.KMax, "kmax", 10, "most options shown per example")
 	fs.StringVar(&c.GPU, "gpu", "auto", "use an NVIDIA GPU: auto, on or off")
 	if err := fs.Parse(args); err != nil {

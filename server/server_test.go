@@ -26,7 +26,7 @@ func (s *stubEval) SystemOne(_ context.Context, state any, qs decide.Questions) 
 	return r, nil
 }
 
-const validBody = `{"model":"decide-0.1.0","state":{"error":"Disk at 98%"},"questions":{"z":{"type":"noul","instructions":"intervene?"},"a":{"type":"noul","instructions":"again?"}}}`
+const validBody = `{"model":"decide-0.2.0","state":{"error":"Disk at 98%"},"questions":{"z":{"type":"noul","instructions":"intervene?"},"a":{"type":"noul","instructions":"again?"}}}`
 
 func do(h http.Handler, method, path, body string, hdr map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
